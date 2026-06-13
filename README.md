@@ -1,143 +1,182 @@
 # Portal TV → PC Webcam
 
-Turn a Meta **Portal TV** (or other ADB-unlocked Portal) into a low-latency, optionally AI-enhanced **webcam for your PC** — usable in Zoom, Google Meet, Teams, Discord, OBS, anything that takes a camera.
+This project lets you turn a **Meta Portal TV** into a webcam for your Windows PC.
 
-In late 2026 Meta unlocked ADB / developer access on Portal devices. This project repurposes that hardware: the Portal captures video, streams it to a Windows PC over USB (or Wi-Fi), and OBS exposes it as a standard **"OBS Virtual Camera."**
+Once set up, you can use the Portal TV camera in apps like **Zoom, Google Meet, Microsoft Teams, Discord, OBS**, or anything else that lets you choose a webcam.
 
-> Documented end-to-end from a real build session — including the dead-ends — so you don't have to rediscover them.
+The basic idea is simple: the Portal TV captures the video, your PC receives it over USB (or Wi-Fi), and **OBS** then makes that video appear to other apps as a normal webcam.
 
----
+This guide documents the full process — including the problems we ran into — so you don't have to figure them out from scratch.
 
-## TL;DR
+## Simple Summary
 
-- **Quick path:** sideload **IP Webcam** on the Portal → OBS **Browser** source → OBS Virtual Camera (~30 min, no compiling).
-- **Best path:** build & install **PortalCam** (the tiny app in this repo) → auto-starts, no ads, self-heals, drop-in replacement.
-- **Transport:** **USB** (`adb forward`) for low, stable latency; Wi-Fi works too.
-- **Enhance (NVIDIA):** OBS **RTX Super Resolution + Artefact Reduction** upscales the 720p feed to a clean 1080p.
+There are two ways to do this:
 
-## ⚠️ Hard limits (read these first)
+- **Easiest method:** install the **IP Webcam** app on the Portal TV, add it to OBS, and turn on OBS Virtual Camera. About 30 minutes, no coding.
+- **Best method:** install the small **PortalCam** app from this project. It starts automatically, has no ads, and is built specifically for this setup. **You can download a prebuilt copy** (see [Releases](../../releases/latest)) — no coding required.
+- **Best connection:** use **USB**. It's faster, more stable, and avoids Wi-Fi problems.
+- **Optional improvement:** if you have an **NVIDIA RTX** graphics card, OBS filters can clean up and upscale the video from 720p to a better-looking 1080p feed.
 
-| Limit | Why |
-|---|---|
-| **Video maxes at 720p** | The camera is owned by a privileged on-device "Smart Camera" service that only exposes **720p** to apps. The sensor does 4K, but that path is reserved for Meta-signed code. *(Verified: requesting 1080p just returns 720p; both camera IDs behave the same.)* |
-| **Built-in mic is unusable** | The far-field mic array requires a Meta-signed permission; sideloaded apps get **digital silence**. Use a **Bluetooth or USB mic** for audio. |
-| **No touchscreen (Portal TV)** | It's remote/voice-driven. Everything here is driven from the PC over adb; PortalCam auto-starts so you rarely touch the device. |
-| **Hardware privacy button** | A physical button on the camera bar kills cam+mic (**red light = off**). No software can override it — check it first if the camera "dies." |
+## Important Limits
 
-## Requirements
+Before you start, a few things to understand:
 
-- A Portal with ADB unlocked: **Settings → Debug → ADB Enabled**
-- Windows 10/11 PC
-- [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) (`adb`)
-- [Zadig](https://zadig.akeo.ie/) (one-time USB driver bind)
-- [OBS Studio](https://obsproject.com/) 28+
-- *(optional, AI enhancement)* NVIDIA RTX GPU + [NVIDIA Broadcast](https://www.nvidia.com/en-us/geforce/broadcasting/broadcast-app/) (ships the Video Effects runtime)
+**The video is limited to 720p.** The camera hardware can do more, but normal apps can only access a 720p version of the feed — the higher-quality path appears reserved for Meta's own software. Even if an app asks for 1080p, the Portal still returns 720p.
 
----
+**The built-in microphone doesn't work for this.** The Portal's mic array is locked behind a Meta-only permission, so apps you install yourself receive silence. **Use a separate mic** (USB or Bluetooth).
 
-## Part 1 — Connect ADB (Windows)
+**The Portal TV has no touchscreen.** It's built for a remote or voice. Almost everything here is driven from your PC using `adb`. Once PortalCam is installed it starts on its own, so you rarely touch the Portal.
 
-Windows has no driver for the Portal's USB vendor ID (`2EC6`), so you bind the inbox **WinUSB** driver:
+**The hardware privacy button overrides everything.** The camera bar has a physical privacy button — if the **red light** is on, the camera and mic are off. No software can override this. If the camera seems dead, **check this button first.**
 
-1. On the Portal: **Settings → Debug → ADB Enabled** (enter PIN).
-2. Connect the Portal to the PC via USB-C. In Device Manager it appears as **PortalTV** with no driver (Code 28).
-3. Run **Zadig** → **Options → ✓ List All Devices** → select **PortalTV** (confirm the USB ID is `2EC6 xxxx`) → target driver **WinUSB** → **Install Driver**. *(Reversible; only affects how this PC talks to this device.)*
-4. **Run adb with `ADB_LIBUSB=1`** (PowerShell: `$env:ADB_LIBUSB='1'`). Zadig assigns a generic device-interface GUID, so adb's classic backend can't find it — the **libusb backend** reads USB descriptors directly and works.
-5. `adb devices` should list the Portal. If it instead logs `ADB interface missing endpoints: bulk_out=`, **re-toggle ADB Enabled off/on on the device AND unplug/replug USB** — the ADB function races the connect and enumerates without endpoints until re-enumerated.
-6. Accept **"Allow USB debugging"** on the Portal's screen (it shows on the connected TV — make sure it's awake). Status flips to `device`.
+## What You Need
 
-## Part 2 — Get the camera streaming
+- A Meta Portal TV with **ADB/developer access** enabled
+- A Windows 10 or 11 PC
+- [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) (includes `adb`)
+- [Zadig](https://zadig.akeo.ie/) (used once, to set up the USB driver)
+- [OBS Studio](https://obsproject.com/) 28 or newer
+- *Optional:* an NVIDIA RTX GPU + [NVIDIA Broadcast](https://www.nvidia.com/en-us/geforce/broadcasting/broadcast-app/) for AI video cleanup
 
-### Option A — PortalCam (recommended; this repo's app)
+> **Note on running `adb`:** `adb` isn't a built-in Windows command. Run the commands below from inside the `platform-tools` folder, or [add that folder to your PATH](https://www.java.com/en/download/help/path.html) so `adb` works from anywhere.
 
-A tiny **headless** app: opens the camera via Camera2, serves **MJPEG** at `:8080/video` and a single JPEG at `:8080/shot.jpg`, runs as a foreground service, **auto-starts on launch and on boot**, and **auto-retries** the camera (handles the post-boot `ERROR_CAMERA_DISABLED` transient). No Google services required.
+## Step 1: Connect the Portal TV to Windows
 
-Build & install (one-time toolchain: **JDK 17**, **Android SDK** platform-34 + build-tools 34, **Gradle 8.x**):
+On the Portal TV, go to **Settings → Debug → ADB Enabled** (you may need to enter a PIN). Then connect the Portal to your PC with a USB-C cable.
 
-```bash
-cd PortalCam
-# point at your toolchain (example):
-#   $env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-17...'
-#   $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-gradle assembleDebug          # no wrapper is bundled; use system Gradle 8.x (AGP 8.2)
-adb install -r -g app/build/outputs/apk/debug/app-debug.apk   # -g grants CAMERA
+Windows may show the Portal in Device Manager **without a working driver** — this is expected. To fix it, use **Zadig**:
+
+1. Open Zadig.
+2. **Options → ✓ List All Devices.**
+3. Select **PortalTV** (confirm the USB ID starts with `2EC6`).
+4. Choose **WinUSB** as the driver.
+5. Click **Install Driver.**
+
+(This only affects how *this PC* talks to *this Portal* over USB, and can be reversed later.)
+
+Next, open **PowerShell** and tell ADB to use its USB backend, then list devices:
+
+```powershell
+$env:ADB_LIBUSB='1'
+adb devices
+```
+
+The Portal TV should appear. If you see an error about **missing ADB endpoints**, turn ADB off and on again on the Portal, then unplug and reconnect the USB cable. You should also get an **"Allow USB debugging"** prompt on the TV — accept it. The Portal should then show as a connected `device`.
+
+## Step 2: Start the Camera Stream
+
+### Option A: PortalCam (recommended)
+
+PortalCam is the small app in this project. It opens the Portal camera and serves the video to your PC. It provides a live feed at `:8080/video` and a single image at `:8080/shot.jpg`, **starts automatically** (on launch and boot), **retries automatically** if the camera isn't ready after a reboot, has **no ads**, and needs **no Google services**.
+
+**Easiest — install the prebuilt app (no build tools):**
+
+1. Download `PortalCam-v1.0.apk` from the [Releases page](../../releases/latest).
+2. Install and launch it:
+
+```powershell
+adb install -r -g PortalCam-v1.0.apk
 adb shell am start -n com.portalcam/.MainActivity
 ```
 
-### Option B — IP Webcam (no build)
+(`-g` grants the camera permission during install. The APK is debug-signed, which is fine for sideloading.)
 
-Sideload [IP Webcam](https://play.google.com/store/apps/details?id=com.pas.webcam) (grab the **arm64 / Android 9** APK from APKMirror). It usually comes as an `.apkm` bundle — unzip it and install the needed splits:
+**For developers — build it yourself:**
 
-```bash
+You'll need **JDK 17**, the **Android SDK** (platform 34 + build-tools 34), and **Gradle 8.x**. Then:
+
+```powershell
+cd PortalCam
+gradle assembleDebug
+adb install -r -g app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.portalcam/.MainActivity
+```
+
+### Option B: IP Webcam (easiest, no app from this project)
+
+Install the **Android 9 / arm64** version of [IP Webcam](https://play.google.com/store/apps/details?id=com.pas.webcam). The Portal has **no app store**, so download the APK from a source like **APKMirror** and push it over USB. If it comes as an `.apkm` bundle, unzip it and install the needed parts:
+
+```powershell
 adb install-multiple base.apk split_config.arm64_v8a.apk split_config.xhdpi.apk split_config.en.apk
 adb shell pm grant com.pas.webcam android.permission.CAMERA
 ```
 
-Launch it on the Portal and tap **Start server**. It serves the same `:8080/video` endpoint, so the rest of this guide is identical.
+Launch IP Webcam on the Portal and tap **Start server**. It serves the same `:8080/video` feed, and the rest of the setup is identical.
 
-## Part 3 — Transport: the USB tunnel (low latency)
+## Step 3: Send the Camera Feed Over USB
 
-Forward the camera port over the USB cable instead of relying on Wi-Fi:
+For the best results, send the video over USB instead of Wi-Fi:
 
-```bash
+```powershell
 adb forward tcp:8088 tcp:8080
 ```
 
-The stream is now at `http://127.0.0.1:8088/video` — stable (no DHCP address to chase), low-latency, and works with Wi-Fi off.
+Your PC can now see the video at `http://127.0.0.1:8088/video`. Using USB avoids Wi-Fi dropouts, changing IP addresses, and extra latency.
 
-## Part 4 — PC side: OBS Virtual Camera
+## Step 4: Add the Camera to OBS
 
-> **Do not use OBS's "Media Source"** for the MJPEG — its ffmpeg ingest buffers ~1 second of latency. Use a **Browser source** instead.
+> **Don't use OBS "Media Source"** for this feed — it works but adds about a second of delay. Use a **Browser Source** instead.
 
-1. Add a **Browser** source → check **Local file** → pick **`scripts/portalcam.html`**. That page polls `/shot.jpg` in a tight load-chained loop and renders near-instantly in OBS's embedded Chromium.
-   - *Why polling instead of `<img src="…/video">`? OBS's CEF rejects some multipart-MJPEG streams that ffmpeg/VLC happily accept. Polling plain JPEGs is bulletproof.*
-   - If your tunnel port isn't `8088`, edit the URL in `portalcam.html`.
-2. Right-click the source → **Transform → Fit to screen**.
-3. Click **Start Virtual Camera** (Controls dock).
-4. In Zoom / Meet / Teams / Discord, choose **"OBS Virtual Camera."** If it doesn't appear, **restart that app or browser** — apps enumerate cameras once at launch.
+In OBS:
 
-## Part 5 — AI enhancement (optional, NVIDIA RTX)
+1. Add a **Browser** source.
+2. Check **Local file** and select **`scripts/portalcam.html`**.
+3. Right-click the source → **Transform → Fit to Screen.**
+4. Click **Start Virtual Camera.**
 
-Clean up and upscale the 720p feed to a sharp 1080p:
+That HTML page rapidly grabs still JPEG frames from the Portal and displays them in OBS — which is far more reliable than asking OBS to play the MJPEG video stream directly. (If your tunnel uses a port other than `8088`, edit the URL inside `portalcam.html`.)
 
-1. Install [obs-rtx-superresolution](https://github.com/Bemjo/OBS-RTX-SuperResolution) into your OBS install dir (needs the NVIDIA Video Effects runtime, which ships with NVIDIA Broadcast).
-2. On the camera source, add filters **in this order**: **NVIDIA Artefact Reduction** → **NVIDIA Super Resolution** (2×). Artefact Reduction strips the JPEG/compression blocking *before* the AI upscale, which matters for a compressed source.
+Now open Zoom / Meet / Teams / Discord and choose **OBS Virtual Camera**. If it doesn't appear, **restart that app or browser** — many apps only check for cameras when they first open.
 
-## Scripts (`scripts/`)
+> **Tip:** for everyday use, just double-click **`scripts/Start-Portal-Cam.cmd`** — it arms the USB tunnel, makes sure the camera app is running, and launches OBS, all in the right order.
 
-| File | What it does |
-|---|---|
-| **`start-portal-cam.ps1`** | One-click bring-up: arms the USB tunnel → ensures the camera app is running → launches OBS with the virtual camera, **in the correct order**. **Edit the CONFIG block** (adb path, OBS path). |
-| **`Start-Portal-Cam.cmd`** | Double-click wrapper for the PowerShell script. |
-| **`portalcam.html`** | The OBS Browser-source page (JPEG-polling renderer). |
-| **`Register-OBS-VirtualCam.cmd`** | Re-registers the OBS Virtual Camera filter if it goes missing. |
+## Step 5: Improve the Video with NVIDIA RTX (optional)
+
+If you have an NVIDIA RTX card, you can clean up and upscale the 720p feed in OBS. Install the [OBS RTX Super Resolution plugin](https://github.com/Bemjo/OBS-RTX-SuperResolution) (it needs the NVIDIA Video Effects runtime, which comes with NVIDIA Broadcast). Then add these filters to the camera source, **in this order**:
+
+1. **NVIDIA Artefact Reduction**
+2. **NVIDIA Super Resolution** (set to 2×)
+
+Artefact Reduction removes compression blocks *before* the image is upscaled, which makes the 720p feed look closer to a clean 1080p webcam.
+
+## Included Scripts (`scripts/`)
+
+- **`start-portal-cam.ps1`** — starts the whole setup in the right order (USB tunnel → camera app → OBS + virtual camera). Edit the CONFIG block at the top to point at your `adb` and OBS locations.
+- **`Start-Portal-Cam.cmd`** — a double-click launcher for the PowerShell script.
+- **`portalcam.html`** — the browser page OBS uses to display the camera feed.
+- **`Register-OBS-VirtualCam.cmd`** — repairs/re-registers the OBS Virtual Camera if it disappears or stops working (run as administrator).
 
 ## Troubleshooting
 
-- **No camera, red light on the bar** → the **hardware privacy button** is engaged. Press it. No software can override it.
-- **Camera `ERROR_CAMERA_DISABLED` right after boot** → the Smart Camera service isn't ready yet. PortalCam auto-retries until it is; other apps just need a relaunch.
-- **Feed frozen on an old frame** → the camera silently stalled (can happen on long-running sessions). Relaunch the camera app. *(PortalCam: a frame-stall watchdog is a known TODO.)*
-- **OBS "Failed to start virtual camera" / button missing** → the vcam filter got wedged — usually after **force-killing OBS** while it was running. Run `Register-OBS-VirtualCam.cmd` (admin) and/or **reboot**. Don't force-kill OBS.
-- **OBS preview blank** → the USB tunnel isn't armed. Run `start-portal-cam.ps1` (it arms the tunnel *before* launching OBS). Opening OBS by itself skips that step.
+**Camera doesn't work and the red light is on** → the hardware privacy button is enabled. Press the button on the camera bar. No software can bypass it.
 
-## How it works / what we learned
+**Camera doesn't work right after boot** → the Portal's camera service may not be ready yet. PortalCam auto-retries until it is; other apps may need to be closed and reopened.
 
+**The video freezes on an old frame** → the camera stream stalled. Restart the camera app. (PortalCam may later include a watchdog to detect this automatically.)
+
+**OBS says "Failed to start virtual camera"** → the virtual camera got stuck, often after force-closing OBS while it was running. Run **`Register-OBS-VirtualCam.cmd`** as administrator; if that doesn't help, reboot. Avoid force-killing OBS while the virtual camera is active.
+
+**OBS preview is blank** → the USB tunnel probably isn't running. Run **`start-portal-cam.ps1`** (it arms the tunnel first). Opening OBS by itself doesn't start the tunnel.
+
+## How the Setup Works
+
+```text
+Portal TV camera
+  → PortalCam (turns the camera into a local video stream)
+  → USB tunnel using ADB
+  → OBS Browser Source
+  → optional NVIDIA cleanup/upscale
+  → OBS Virtual Camera
+  → Zoom / Meet / Teams / Discord
 ```
-Portal camera ──(Camera2, 720p)──> PortalCam (MJPEG server :8080)
-      │                                   │
-      │                         adb forward 8088→8080 (USB)
-      ▼                                   ▼
- [privileged Smart            OBS Browser source (polls /shot.jpg)
-  Camera service caps           → NVIDIA Artefact-Reduction + Super-Resolution
-  apps at 720p]                 → OBS Virtual Camera → Zoom/Meet/Teams/…
-```
 
-Notable findings from the build:
-- `dumpsys media.camera` shows the HAL exposing 1080p/4K, but every app opens the **Smart Camera virtual camera**, which clamps output to **720p**. The 4K path is privileged-only.
-- The mic array is gated behind a **Meta-signed** permission → sideloaded apps record silence. Bring your own (BT/USB) mic.
-- OBS's CEF won't render the multipart MJPEG, but renders polled JPEGs fine — hence `portalcam.html`.
-- Force-killing OBS wedges the virtual-camera DirectShow filter; a clean exit (and, if needed, re-register + reboot) avoids it.
+## What We Learned
+
+- The Portal TV camera hardware appears to support higher resolutions, but normal apps are limited to **720p**.
+- The built-in mic array isn't usable here — it needs a Meta-only permission, so installed apps get silence.
+- OBS doesn't reliably show the direct MJPEG stream in a browser source, but it works great when repeatedly loading still JPEG frames.
+- Force-closing OBS can break the virtual camera driver. Closing OBS normally is safer.
 
 ## License
 
-[MIT](LICENSE). Not affiliated with or endorsed by Meta.
+[MIT](LICENSE). This project is not affiliated with or endorsed by Meta.
