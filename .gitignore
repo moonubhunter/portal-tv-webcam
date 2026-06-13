@@ -1,0 +1,18 @@
+# Android / Gradle build outputs
+build/
+.gradle/
+.idea/
+*.iml
+local.properties
+
+# Binaries we don't redistribute
+*.apk
+*.apkm
+*.aab
+platform-tools/
+
+# Captured frames / personal data (never commit these)
+*.jpg
+*.jpeg
+captures/
+camera-dump.txt
