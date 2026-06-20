@@ -67,15 +67,15 @@ The Portal TV should appear. If you see an error about **missing ADB endpoints**
 
 ### Option A: PortalCam (recommended)
 
-PortalCam is the small app in this project. It opens the Portal camera and serves the video to your PC. It provides a live feed at `:8080/video` and a single image at `:8080/shot.jpg`, **starts automatically** (on launch and boot), **retries automatically** if the camera isn't ready after a reboot, has **no ads**, and needs **no Google services**.
+PortalCam is the small app in this project. It opens the Portal camera and serves the video to your PC. It provides a live feed at `:8080/video` and a single image at `:8080/shot.jpg`, **shows a live preview on the Portal's own screen**, runs the camera at a steady **30 fps**, **starts automatically** (on launch and boot), **retries automatically** if the camera isn't ready after a reboot, has **no ads**, and needs **no Google services**.
 
 **Easiest — install the prebuilt app (no build tools):**
 
-1. Download `PortalCam-v1.0.apk` from the [Releases page](../../releases/latest).
+1. Download `PortalCam-v1.1.apk` from the [Releases page](../../releases/latest).
 2. Install and launch it:
 
 ```powershell
-adb install -r -g PortalCam-v1.0.apk
+adb install -r -g PortalCam-v1.1.apk
 adb shell am start -n com.portalcam/.MainActivity
 ```
 

@@ -160,7 +160,7 @@ public class CameraService extends Service {
                 CaptureRequest.Builder b = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
                 b.addTarget(imageReader.getSurface());
                 b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(15, 30));
+                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(30, 30));
                 session.setRepeatingRequest(b.build(), null, camHandler);
                 openAttempts = 0;
                 Log.i(TAG, "repeating request started");
